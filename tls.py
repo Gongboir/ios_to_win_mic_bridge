@@ -29,7 +29,7 @@ def ensure_cert(lan_ip: str | None = None) -> tuple[Path, Path]:
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
 
     subject = issuer = x509.Name([
-        x509.NameAttribute(NameOID.COMMON_NAME, 'iphone-mic-bridge'),
+        x509.NameAttribute(NameOID.COMMON_NAME, 'iPhone Mic Bridge CA'),
     ])
 
     san_entries: list[x509.GeneralName] = [
@@ -43,6 +43,8 @@ def ensure_cert(lan_ip: str | None = None) -> tuple[Path, Path]:
             pass
 
     now = datetime.datetime.now(datetime.timezone.utc)
+    # Self-signed cert used both as root CA (so iOS can install it as a trust
+    # anchor) and as the TLS server cert — simplest setup for a LAN tool.
     cert = (
         x509.CertificateBuilder()
         .subject_name(subject)
@@ -52,7 +54,29 @@ def ensure_cert(lan_ip: str | None = None) -> tuple[Path, Path]:
         .not_valid_before(now - datetime.timedelta(days=1))
         .not_valid_after(now + datetime.timedelta(days=365 * 5))
         .add_extension(x509.SubjectAlternativeName(san_entries), critical=False)
-        .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
+        .add_extension(x509.BasicConstraints(ca=True, path_length=0), critical=True)
+        .add_extension(
+            x509.KeyUsage(
+                digital_signature=True,
+                content_commitment=False,
+                key_encipherment=True,
+                data_encipherment=False,
+                key_agreement=False,
+                key_cert_sign=True,
+                crl_sign=True,
+                encipher_only=False,
+                decipher_only=False,
+            ),
+            critical=True,
+        )
+        .add_extension(
+            x509.ExtendedKeyUsage([x509.ExtendedKeyUsageOID.SERVER_AUTH]),
+            critical=False,
+        )
+        .add_extension(
+            x509.SubjectKeyIdentifier.from_public_key(key.public_key()),
+            critical=False,
+        )
         .sign(key, hashes.SHA256())
     )
 
