@@ -18,16 +18,22 @@ if not exist ".venv\Scripts\python.exe" (
         pause
         exit /b 1
     )
-    call ".venv\Scripts\activate.bat"
-    python -m pip install --upgrade pip
-    pip install -r requirements.txt
-) else (
-    call ".venv\Scripts\activate.bat"
+)
+
+call ".venv\Scripts\activate.bat"
+
+echo Installing/updating dependencies...
+python -m pip install --upgrade pip >nul
+pip install -r requirements.txt
+if errorlevel 1 (
+    echo Dependency install failed.
+    pause
+    exit /b 1
 )
 
 echo.
 echo === iPhone Mic Bridge ===
-echo Starting server... open the printed URL on your iPhone.
+echo Starting server... open the printed https:// URL on your iPhone.
 echo Press Ctrl+C to stop.
 echo.
 

@@ -362,6 +362,16 @@ async function start() {
     els.startBtn.disabled = true;
     setStatus('connecting', 'Requesting mic…');
 
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        showError(
+            'This page is not a secure context — Safari blocks mic access. ' +
+            'Make sure the URL starts with https:// and accept the cert warning.'
+        );
+        setStatus('err', 'Insecure');
+        els.startBtn.disabled = false;
+        return;
+    }
+
     try {
         state.stream = await navigator.mediaDevices.getUserMedia({
             audio: {

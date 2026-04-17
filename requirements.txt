@@ -2,3 +2,4 @@ websockets>=12
 aiohttp>=3.9
 sounddevice>=0.4.6
 numpy>=1.26
+cryptography>=42

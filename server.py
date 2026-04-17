@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import socket
+import ssl
 from pathlib import Path
 
 import websockets
@@ -12,6 +13,7 @@ from websockets.exceptions import ConnectionClosed
 
 from audio import AudioOutput, VBCableNotFound
 from config import HTTP_PORT, WS_HOST, WS_PORT
+from tls import ensure_cert
 
 logging.basicConfig(
     level=logging.INFO,
@@ -85,12 +87,12 @@ def make_http_app() -> web.Application:
     return app
 
 
-async def run_http(app: web.Application) -> None:
+async def run_http(app: web.Application, ssl_ctx: ssl.SSLContext) -> None:
     runner = web.AppRunner(app, access_log=None)
     await runner.setup()
-    site = web.TCPSite(runner, '0.0.0.0', HTTP_PORT)
+    site = web.TCPSite(runner, '0.0.0.0', HTTP_PORT, ssl_context=ssl_ctx)
     await site.start()
-    log.info("HTTP server listening on :%d", HTTP_PORT)
+    log.info("HTTPS server listening on :%d", HTTP_PORT)
     try:
         while True:
             await asyncio.sleep(3600)
@@ -109,7 +111,14 @@ async def main() -> None:
     log.info("Audio stream started")
 
     lan_ip = _get_lan_ip()
-    log.info("Open on iPhone: http://%s:%d", lan_ip, HTTP_PORT)
+
+    cert_path, key_path = ensure_cert(lan_ip)
+    ssl_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ssl_ctx.load_cert_chain(cert_path, key_path)
+    log.info("TLS enabled — cert=%s key=%s", cert_path.name, key_path.name)
+
+    log.info("Open on iPhone: https://%s:%d", lan_ip, HTTP_PORT)
+    log.info("Safari will warn about the cert once — tap 'Show details' → 'visit this website'")
 
     handler = make_ws_handler(audio)
     app = make_http_app()
@@ -121,10 +130,11 @@ async def main() -> None:
         max_size=2 ** 22,  # 4 MiB — plenty for a 2048-sample Float32 chunk
         ping_interval=20,
         ping_timeout=20,
+        ssl=ssl_ctx,
     ):
-        log.info("WebSocket server listening on :%d", WS_PORT)
+        log.info("Secure WebSocket server listening on :%d", WS_PORT)
         try:
-            await run_http(app)
+            await run_http(app, ssl_ctx)
         finally:
             audio.stop()
 
