@@ -208,8 +208,11 @@ const state = {
     pingTimer:   null,
     pingSentAt:  0,
     keepAliveOsc: null,
+    keepAliveBuf: null,
     connectTimer: null,
     everConnected: false,
+    wakeLock: null,
+    keepAliveEl: null,
 };
 
 function setStatus(kind, text) {
@@ -263,14 +266,41 @@ function workletURL() {
 }
 
 function keepAudioSessionAlive(ctx) {
-    if (state.keepAliveOsc) return;
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-    gain.gain.value = 0;
-    osc.connect(gain);
-    gain.connect(ctx.destination);
-    osc.start();
-    state.keepAliveOsc = osc;
+    if (!state.keepAliveOsc) {
+        const osc = ctx.createOscillator();
+        osc.frequency.value = 20;
+        const gain = ctx.createGain();
+        gain.gain.value = 0.0001;
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start();
+        state.keepAliveOsc = osc;
+    }
+
+    // Silent looping buffer source — some iOS versions silence zero-gain
+    // oscillators but still honour a real buffer playback.
+    if (!state.keepAliveBuf) {
+        const buf = ctx.createBuffer(1, ctx.sampleRate, ctx.sampleRate);
+        const src = ctx.createBufferSource();
+        src.buffer = buf;
+        src.loop = true;
+        src.connect(ctx.destination);
+        src.start();
+        state.keepAliveBuf = src;
+    }
+}
+
+async function requestWakeLock() {
+    if (!('wakeLock' in navigator)) return;
+    if (state.wakeLock) return;
+    try {
+        state.wakeLock = await navigator.wakeLock.request('screen');
+        state.wakeLock.addEventListener('release', () => {
+            state.wakeLock = null;
+        });
+    } catch (e) {
+        console.warn('Wake lock request failed:', e);
+    }
 }
 
 function wsURL() {
@@ -481,6 +511,7 @@ async function start() {
             state.audioCtx.resume().then(() => {
                 if (state.ws && state.ws.readyState === WebSocket.OPEN) startStreaming();
             }).catch(() => {});
+            requestWakeLock();
         }
     });
 
@@ -488,6 +519,7 @@ async function start() {
     els.controls.classList.remove('hidden');
 
     await startStreaming();
+    await requestWakeLock();
     connectWS();
 }
 
