@@ -1,9 +1,11 @@
 """Self-signed TLS cert generation for iOS Safari (getUserMedia needs HTTPS)."""
 from __future__ import annotations
 
+import base64
 import datetime
 import ipaddress
 import logging
+import uuid
 from pathlib import Path
 
 from cryptography import x509
@@ -62,3 +64,68 @@ def ensure_cert(lan_ip: str | None = None) -> tuple[Path, Path]:
     CERT_FILE.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
 
     return CERT_FILE, KEY_FILE
+
+
+def build_mobileconfig(cert_pem_path: Path) -> bytes:
+    """Build an iOS .mobileconfig profile that installs the cert as a trusted root.
+
+    After installation the user must also enable the cert under
+    Settings → General → About → Certificate Trust Settings.
+    """
+    cert = x509.load_pem_x509_certificate(cert_pem_path.read_bytes())
+    cert_der = cert.public_bytes(serialization.Encoding.DER)
+    cert_b64 = base64.b64encode(cert_der).decode('ascii')
+
+    # Chunk base64 into 52-char lines for pretty plist output.
+    cert_b64_wrapped = '\n'.join(cert_b64[i:i + 52] for i in range(0, len(cert_b64), 52))
+
+    cert_uuid = str(uuid.uuid5(uuid.NAMESPACE_DNS, 'iphonemicbridge.cert')).upper()
+    profile_uuid = str(uuid.uuid5(uuid.NAMESPACE_DNS, 'iphonemicbridge.profile')).upper()
+
+    plist = f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>PayloadContent</key>
+    <array>
+        <dict>
+            <key>PayloadCertificateFileName</key>
+            <string>iphone-mic-bridge.cer</string>
+            <key>PayloadContent</key>
+            <data>
+{cert_b64_wrapped}
+            </data>
+            <key>PayloadDescription</key>
+            <string>Trust root for iPhone Mic Bridge local server</string>
+            <key>PayloadDisplayName</key>
+            <string>iPhone Mic Bridge CA</string>
+            <key>PayloadIdentifier</key>
+            <string>com.iphonemicbridge.cert.{cert_uuid}</string>
+            <key>PayloadType</key>
+            <string>com.apple.security.root</string>
+            <key>PayloadUUID</key>
+            <string>{cert_uuid}</string>
+            <key>PayloadVersion</key>
+            <integer>1</integer>
+        </dict>
+    </array>
+    <key>PayloadDescription</key>
+    <string>Installs the self-signed cert used by the iPhone Mic Bridge so Safari trusts WSS connections.</string>
+    <key>PayloadDisplayName</key>
+    <string>iPhone Mic Bridge</string>
+    <key>PayloadIdentifier</key>
+    <string>com.iphonemicbridge.profile.{profile_uuid}</string>
+    <key>PayloadOrganization</key>
+    <string>iPhone Mic Bridge</string>
+    <key>PayloadRemovalDisallowed</key>
+    <false/>
+    <key>PayloadType</key>
+    <string>Configuration</string>
+    <key>PayloadUUID</key>
+    <string>{profile_uuid}</string>
+    <key>PayloadVersion</key>
+    <integer>1</integer>
+</dict>
+</plist>
+"""
+    return plist.encode('utf-8')

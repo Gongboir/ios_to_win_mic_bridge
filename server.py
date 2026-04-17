@@ -15,7 +15,7 @@ from aiohttp import WSMsgType, web
 
 from audio import AudioOutput, VBCableNotFound
 from config import HTTP_PORT
-from tls import ensure_cert
+from tls import build_mobileconfig, ensure_cert
 
 logging.basicConfig(
     level=logging.INFO,
@@ -39,12 +39,22 @@ def _get_lan_ip() -> str:
         s.close()
 
 
-def make_app(audio: AudioOutput) -> web.Application:
+def make_app(audio: AudioOutput, cert_path: Path) -> web.Application:
     app = web.Application()
     app['active_client'] = None
 
     async def index(_request):
         return web.FileResponse(CLIENT_DIR / 'index.html')
+
+    async def mobileconfig(_request):
+        body = build_mobileconfig(cert_path)
+        return web.Response(
+            body=body,
+            headers={
+                'Content-Type': 'application/x-apple-aspen-config',
+                'Content-Disposition': 'attachment; filename="iphone-mic-bridge.mobileconfig"',
+            },
+        )
 
     async def ws_handler(request: web.Request) -> web.WebSocketResponse:
         ws = web.WebSocketResponse(max_msg_size=2 ** 22, heartbeat=20)
@@ -84,6 +94,7 @@ def make_app(audio: AudioOutput) -> web.Application:
     app.router.add_get('/', index)
     app.router.add_get('/index.html', index)
     app.router.add_get('/ws', ws_handler)
+    app.router.add_get('/trust.mobileconfig', mobileconfig)
     app.router.add_static('/static', path=str(CLIENT_DIR), show_index=False)
     return app
 
@@ -108,7 +119,7 @@ async def main() -> None:
     log.info("Open on iPhone: https://%s:%d", lan_ip, HTTP_PORT)
     log.info("Safari will warn about the cert once — tap 'Show details' → 'visit this website'")
 
-    app = make_app(audio)
+    app = make_app(audio, cert_path)
     runner = web.AppRunner(app, access_log=None)
     await runner.setup()
     site = web.TCPSite(runner, '0.0.0.0', HTTP_PORT, ssl_context=ssl_ctx)

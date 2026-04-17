@@ -157,7 +157,15 @@
 </div>
 
 <div id="errorCard" class="card hidden">
-    <p id="errorText" class="hint" style="color:var(--err);margin:0"></p>
+    <p id="errorText" class="hint" style="color:var(--err);margin:0 0 12px"></p>
+    <a id="installTrustBtn" class="resume-btn hidden" href="/trust.mobileconfig" style="text-decoration:none;text-align:center;background:var(--warn);color:#0b0d10">
+        Install Trust Profile
+    </a>
+    <p class="hint" style="margin:12px 0 0;font-size:12px">
+        After tapping: <em>Allow Download → Settings app → Profile Downloaded → Install</em>.
+        Then go to <em>Settings → General → About → Certificate Trust Settings</em> and enable
+        "iPhone Mic Bridge". Return here and reload.
+    </p>
 </div>
 
 <footer>LAN-only — no auth, no encryption</footer>
@@ -180,6 +188,7 @@ const els = {
     resumeBtn:    document.getElementById('resumeBtn'),
     errorCard:    document.getElementById('errorCard'),
     errorText:    document.getElementById('errorText'),
+    installTrustBtn: document.getElementById('installTrustBtn'),
     dot:          document.getElementById('dot'),
     statusText:   document.getElementById('statusText'),
 };
@@ -199,6 +208,8 @@ const state = {
     pingTimer:   null,
     pingSentAt:  0,
     keepAliveOsc: null,
+    connectTimer: null,
+    everConnected: false,
 };
 
 function setStatus(kind, text) {
@@ -270,20 +281,41 @@ function wsURL() {
 function connectWS() {
     if (state.ws && (state.ws.readyState === WebSocket.OPEN || state.ws.readyState === WebSocket.CONNECTING)) return;
 
+    const url = wsURL();
     setStatus('connecting', 'Connecting…');
     let ws;
     try {
-        ws = new WebSocket(wsURL());
+        ws = new WebSocket(url);
     } catch (e) {
+        showError('WebSocket constructor threw: ' + e.message);
         scheduleReconnect();
         return;
     }
     ws.binaryType = 'arraybuffer';
     state.ws = ws;
 
+    clearTimeout(state.connectTimer);
+    state.connectTimer = setTimeout(() => {
+        if (ws.readyState === WebSocket.CONNECTING) {
+            if (!state.everConnected) {
+                showError(
+                    'WebSocket stuck opening ' + url + '. ' +
+                    'On iOS Safari this usually means the self-signed TLS cert is not trusted for WebSockets — ' +
+                    'install the trust profile and try again.'
+                );
+                els.installTrustBtn.classList.remove('hidden');
+            }
+            try { ws.close(); } catch (_) {}
+        }
+    }, 6000);
+
     ws.onopen = () => {
+        clearTimeout(state.connectTimer);
         state.connected = true;
+        state.everConnected = true;
         state.reconnectDelay = 1000;
+        clearError();
+        els.installTrustBtn.classList.add('hidden');
         if (state.interrupted) {
             setStatus('call', 'Call in progress');
         } else {
@@ -299,9 +331,18 @@ function connectWS() {
         }
     };
 
-    ws.onclose = () => {
+    ws.onclose = (ev) => {
+        clearTimeout(state.connectTimer);
         state.connected = false;
         stopPingLoop();
+        if (!state.everConnected) {
+            const reason = ev.reason || '(no reason)';
+            showError(
+                'WebSocket closed before opening — code ' + ev.code + ', ' + reason + '. ' +
+                'If you are on iOS Safari with a self-signed cert, install the trust profile below.'
+            );
+            els.installTrustBtn.classList.remove('hidden');
+        }
         if (!state.interrupted) {
             setStatus('reconnecting', 'Reconnecting…');
         }
