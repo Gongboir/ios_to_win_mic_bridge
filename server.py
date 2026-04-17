@@ -1,4 +1,8 @@
-"""Entry point: asyncio WebSocket + HTTP server bridging iPhone mic → VB-Cable."""
+"""Entry point: aiohttp server bridging iPhone mic → VB-Cable over a single HTTPS port.
+
+HTML + WebSocket share the same port/cert, so iOS Safari only needs to accept the
+self-signed certificate once.
+"""
 from __future__ import annotations
 
 import asyncio
@@ -7,12 +11,10 @@ import socket
 import ssl
 from pathlib import Path
 
-import websockets
-from aiohttp import web
-from websockets.exceptions import ConnectionClosed
+from aiohttp import WSMsgType, web
 
 from audio import AudioOutput, VBCableNotFound
-from config import HTTP_PORT, WS_HOST, WS_PORT
+from config import HTTP_PORT
 from tls import ensure_cert
 
 logging.basicConfig(
@@ -23,8 +25,6 @@ logging.basicConfig(
 log = logging.getLogger('server')
 
 CLIENT_DIR = Path(__file__).parent / 'client'
-
-_active_client: websockets.WebSocketServerProtocol | None = None
 
 
 def _get_lan_ip() -> str:
@@ -39,65 +39,53 @@ def _get_lan_ip() -> str:
         s.close()
 
 
-def make_ws_handler(audio: AudioOutput):
-    async def handler(websocket):
-        global _active_client
-        peer = f"{websocket.remote_address[0]}:{websocket.remote_address[1]}"
-
-        if _active_client is not None:
-            log.warning("Second client %s rejected (one at a time)", peer)
-            await websocket.close(code=1008, reason='another client is active')
-            return
-
-        _active_client = websocket
-        log.info("Client connected: %s", peer)
-
-        try:
-            async for frame in websocket:
-                if isinstance(frame, bytes):
-                    audio.push(frame)
-                elif isinstance(frame, str):
-                    # Text control messages, e.g. 'ping'
-                    if frame == 'ping':
-                        try:
-                            await websocket.send('pong')
-                        except ConnectionClosed:
-                            break
-        except ConnectionClosed:
-            pass
-        except Exception:
-            log.exception("Unhandled error in ws handler")
-        finally:
-            log.info("Client disconnected: %s", peer)
-            if _active_client is websocket:
-                _active_client = None
-
-    return handler
-
-
-def make_http_app() -> web.Application:
+def make_app(audio: AudioOutput) -> web.Application:
     app = web.Application()
+    app['active_client'] = None
 
     async def index(_request):
         return web.FileResponse(CLIENT_DIR / 'index.html')
 
+    async def ws_handler(request: web.Request) -> web.WebSocketResponse:
+        ws = web.WebSocketResponse(max_msg_size=2 ** 22, heartbeat=20)
+        await ws.prepare(request)
+
+        peer = request.remote or 'unknown'
+
+        if app['active_client'] is not None:
+            log.warning("Second client %s rejected (one at a time)", peer)
+            await ws.close(code=1008, message=b'another client is active')
+            return ws
+
+        app['active_client'] = ws
+        log.info("Client connected: %s", peer)
+
+        try:
+            async for msg in ws:
+                if msg.type == WSMsgType.BINARY:
+                    audio.push(msg.data)
+                elif msg.type == WSMsgType.TEXT:
+                    if msg.data == 'ping':
+                        await ws.send_str('pong')
+                elif msg.type == WSMsgType.ERROR:
+                    log.warning("WS error from %s: %s", peer, ws.exception())
+                    break
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("Unhandled error in ws handler")
+        finally:
+            log.info("Client disconnected: %s", peer)
+            if app['active_client'] is ws:
+                app['active_client'] = None
+
+        return ws
+
     app.router.add_get('/', index)
     app.router.add_get('/index.html', index)
-    app.router.add_static('/', path=str(CLIENT_DIR), show_index=False)
+    app.router.add_get('/ws', ws_handler)
+    app.router.add_static('/static', path=str(CLIENT_DIR), show_index=False)
     return app
-
-
-async def run_http(app: web.Application, ssl_ctx: ssl.SSLContext) -> None:
-    runner = web.AppRunner(app, access_log=None)
-    await runner.setup()
-    site = web.TCPSite(runner, '0.0.0.0', HTTP_PORT, ssl_context=ssl_ctx)
-    await site.start()
-    log.info("HTTPS server listening on :%d", HTTP_PORT)
-    try:
-        while True:
-            await asyncio.sleep(3600)
-    finally:
-        await runner.cleanup()
 
 
 async def main() -> None:
@@ -120,23 +108,19 @@ async def main() -> None:
     log.info("Open on iPhone: https://%s:%d", lan_ip, HTTP_PORT)
     log.info("Safari will warn about the cert once — tap 'Show details' → 'visit this website'")
 
-    handler = make_ws_handler(audio)
-    app = make_http_app()
+    app = make_app(audio)
+    runner = web.AppRunner(app, access_log=None)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', HTTP_PORT, ssl_context=ssl_ctx)
+    await site.start()
+    log.info("HTTPS + WebSocket listening on :%d (ws path: /ws)", HTTP_PORT)
 
-    async with websockets.serve(
-        handler,
-        WS_HOST,
-        WS_PORT,
-        max_size=2 ** 22,  # 4 MiB — plenty for a 2048-sample Float32 chunk
-        ping_interval=20,
-        ping_timeout=20,
-        ssl=ssl_ctx,
-    ):
-        log.info("Secure WebSocket server listening on :%d", WS_PORT)
-        try:
-            await run_http(app, ssl_ctx)
-        finally:
-            audio.stop()
+    try:
+        while True:
+            await asyncio.sleep(3600)
+    finally:
+        await runner.cleanup()
+        audio.stop()
 
 
 if __name__ == '__main__':
