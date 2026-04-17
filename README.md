@@ -11,26 +11,23 @@ Stream your iPhone's microphone to a Windows PC over Wi-Fi so it shows up as a r
 The console prints something like:
 
 ```
-Open on iPhone: http://192.168.1.42:8080
+Open on iPhone: https://192.168.1.42:8080
 ```
+
+On first run the server auto-generates a self-signed cert (`cert.pem` / `key.pem`) — iOS Safari requires HTTPS for mic access.
 
 ## Using it
 
 1. Make sure your iPhone is on the same Wi-Fi as the PC.
 2. On the iPhone, open Safari and go to the URL printed above.
-3. Tap **Start**, grant mic permission.
-4. Status badge goes green → **Live**.
-5. In Discord: *Settings → Voice & Video → Input Device → "CABLE Output (VB-Audio Virtual Cable)"*.
+3. **Accept the cert warning**: tap *"Show details" → "visit this website" → "Visit Website"*. Only needed the first time.
+4. Tap **Start**, grant mic permission.
+5. Status badge goes green → **Live**.
+6. In Discord: *Settings → Voice & Video → Input Device → "CABLE Output (VB-Audio Virtual Cable)"*.
 
-## If Safari blocks the mic on `http://`
+### Regenerate the cert
 
-Safari requires HTTPS for `getUserMedia` on some iOS versions. Generate a self-signed cert, then edit `server.py` to pass an `ssl.SSLContext` to both `web.TCPSite` and `websockets.serve`. See `iphone_mic_plan_v1.md` §8.
-
-```
-openssl req -x509 -newkey rsa:2048 -keyout key.pem -out cert.pem -days 365 -nodes -subj "/CN=localhost"
-```
-
-iPhone will warn once about the untrusted cert — tap *Advanced → Proceed*.
+Delete `cert.pem` and `key.pem` and restart. A fresh cert will be generated (useful if your PC's LAN IP changes — the cert pins the IP into its SAN extension).
 
 ## Features
 
